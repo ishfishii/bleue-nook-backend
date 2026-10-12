@@ -106,18 +106,19 @@ const EXPENSE_SELECT = `
          e.category_id AS "categoryId",
          COALESCE(c.name, 'Uncategorized') AS "categoryName",
          COALESCE(c.auto_inventory, false) AS "autoInventory",
+         c.icon AS "categoryIcon",
          e.order_reference AS "orderReference",
          e.date AS "date",
          e.created_at AS "createdAt",
          COALESCE(json_agg(json_build_object(
-           'id', i.id, 'name', i.item_name, 'quantity', i.quantity,
-           'unitPrice', i.unit_price::float, 'productLink', i.product_link
+            'id', i.id, 'name', i.item_name, 'quantity', i.quantity,
+            'unitPrice', i.unit_price::float, 'productLink', i.product_link
          ) ORDER BY i.item_name) FILTER (WHERE i.id IS NOT NULL), '[]'::json) AS items
   FROM expenses e
   LEFT JOIN merchants m ON m.id = e.merchant_id
   LEFT JOIN categories c ON c.id = e.category_id
   LEFT JOIN expense_items i ON i.expense_id = e.id`;
-const EXPENSE_GROUP = 'GROUP BY e.id, m.name, c.name, c.auto_inventory';
+const EXPENSE_GROUP = 'GROUP BY e.id, m.name, c.name, c.auto_inventory, c.icon';
 
 const INVENTORY_SELECT = `
   SELECT v.id,
@@ -138,11 +139,43 @@ app.get('/api/health', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ---------- routes: categories ----------
 app.get('/api/categories', wrap(async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, auto_inventory AS "autoInventory" FROM categories ORDER BY name');
+  const { rows } = await pool.query('SELECT id, name, auto_inventory AS "autoInventory", icon FROM categories ORDER BY name');
   res.json(rows);
 }));
 
+app.post('/api/categories', wrap(async (req, res) => {
+  const name = String(req.body.name ?? '').trim();
+  const autoInventory = Boolean(req.body.autoInventory);
+  const icon = String(req.body.icon ?? 'pricetag-outline').trim();
+
+  if (!name) return bad(res, 'Category name is required');
+
+  const created = await pool.query(
+    'INSERT INTO categories (id, name, auto_inventory, icon) VALUES (gen_random_uuid(), $1, $2, $3) RETURNING id, name, auto_inventory AS "autoInventory", icon',
+    [name, autoInventory, icon]
+  );
+  res.status(201).json(created.rows[0]);
+}));
+
+app.put('/api/categories/:id', wrap(async (req, res) => {
+  const name = String(req.body.name ?? '').trim();
+  const autoInventory = Boolean(req.body.autoInventory);
+  const icon = String(req.body.icon ?? 'pricetag-outline').trim();
+
+  if (!name) return bad(res, 'Category name is required');
+
+  const updated = await pool.query(
+    'UPDATE categories SET name = $1, auto_inventory = $2, icon = $3 WHERE id = $4 RETURNING id, name, auto_inventory AS "autoInventory", icon',
+    [name, autoInventory, icon, req.params.id]
+  );
+
+  if (updated.rowCount === 0) return res.status(404).json({ error: 'Category not found' });
+  res.json(updated.rows[0]);
+}));
+
+// ---------- routes: merchants ----------
 app.get('/api/merchants', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT id, name, type, platform_url AS "platformUrl" FROM merchants ORDER BY name');
   res.json(rows);
