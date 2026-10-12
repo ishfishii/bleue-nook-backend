@@ -97,6 +97,15 @@ async function addToInventory(db, item, merchantId) {
   await refreshStatus(db, id);
 }
 
+function calculateExpiryDate(dateOpened, years = 0, months = 0, days = 0) {
+  if (!dateOpened) return null;
+  const d = new Date(dateOpened);
+  if (years) d.setFullYear(d.getFullYear() + Number(years));
+  if (months) d.setMonth(d.getMonth() + Number(months));
+  if (days) d.setDate(d.getDate() + Number(days));
+  return d.toISOString().split('T')[0];
+}
+
 // ---------- queries ----------
 const EXPENSE_SELECT = `
   SELECT e.id,
@@ -128,6 +137,13 @@ const INVENTORY_SELECT = `
          COALESCE(v.low_stock_threshold, ${DEFAULT_LOW_STOCK}) AS "lowStockThreshold",
          v.storage_location AS "storageLocation",
          v.status,
+         v.date_opened AS "dateOpened",
+         v.storage_years AS "storageYears",
+         v.storage_months AS "storageMonths",
+         v.storage_days AS "storageDays",
+         v.expiration_date AS "expirationDate",
+         v.is_essential AS "isEssential",
+         v.location,
          m.name AS "lastPurchasedFrom",
          v.updated_at AS "updatedAt"
   FROM inventory v
@@ -270,6 +286,7 @@ app.patch('/api/expenses/:id', wrap(async (req, res) => {
   res.json(rows[0]);
 }));
 
+// ---------- routes: inventory ----------
 app.get('/api/inventory', wrap(async (req, res) => {
   const { rows } = await pool.query(`${INVENTORY_SELECT} ORDER BY v.item_name`);
   res.json(rows);
@@ -282,11 +299,59 @@ const INVENTORY_FIELDS = {
   quantity: 'current_qty',
   lowStockThreshold: 'low_stock_threshold',
   storageLocation: 'storage_location',
+  status: 'status',
+  dateOpened: 'date_opened',
+  storageYears: 'storage_years',
+  storageMonths: 'storage_months',
+  storageDays: 'storage_days',
+  expirationDate: 'expiration_date',
+  isEssential: 'is_essential',
+  location: 'location',
 };
 
+app.post('/api/inventory', wrap(async (req, res) => {
+  const name = String(req.body.name ?? '').trim();
+  if (!name) return bad(res, 'Item name is required');
+
+  const category = req.body.category !== undefined ? req.body.category : null;
+  const quantity = Math.max(0, Math.round(Number(req.body.quantity ?? 1)));
+  const status = req.body.status || 'Active';
+  const dateOpened = req.body.dateOpened || null;
+  const storageYears = req.body.storageYears ? Number(req.body.storageYears) : null;
+  const storageMonths = req.body.storageMonths ? Number(req.body.storageMonths) : null;
+  const storageDays = req.body.storageDays ? Number(req.body.storageDays) : null;
+  const expirationDate = req.body.expirationDate || calculateExpiryDate(dateOpened, storageYears, storageMonths, storageDays);
+  const isEssential = Boolean(req.body.isEssential);
+  const location = req.body.location ? String(req.body.location).trim() : null;
+
+  const created = await pool.query(
+    `INSERT INTO public.inventory 
+       (id, item_name, category, current_qty, low_stock_threshold, status, date_opened, storage_years, storage_months, storage_days, expiration_date, is_essential, location, updated_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+     RETURNING id`,
+    [name, category, quantity, DEFAULT_LOW_STOCK, status, dateOpened, storageYears, storageMonths, storageDays, expirationDate, isEssential, location]
+  );
+
+  const id = created.rows[0].id;
+  const { rows } = await pool.query(`${INVENTORY_SELECT} WHERE v.id = $1`, [id]);
+  res.status(201).json(rows[0]);
+}));
+
 app.patch('/api/inventory/:id', wrap(async (req, res) => {
+  console.log(`PATCH /api/inventory/${req.params.id} body received:`, req.body);
   const sets = [];
   const values = [req.params.id];
+
+  if ('dateOpened' in req.body || 'storageYears' in req.body || 'storageMonths' in req.body || 'storageDays' in req.body) {
+    if (!('expirationDate' in req.body) || !req.body.expirationDate) {
+      req.body.expirationDate = calculateExpiryDate(
+        req.body.dateOpened, 
+        req.body.storageYears || 0, 
+        req.body.storageMonths || 0, 
+        req.body.storageDays || 0
+      );
+    }
+  }
 
   for (const [key, column] of Object.entries(INVENTORY_FIELDS)) {
     if (!(key in req.body)) continue;
@@ -296,12 +361,8 @@ app.patch('/api/inventory/:id', wrap(async (req, res) => {
       value = String(value ?? '').trim();
       if (!value) return bad(res, 'Name cannot be empty');
     }
-    if (key === 'category' && value !== null && !INVENTORY_CATEGORIES.includes(value)) {
-      return bad(res, 'Unknown inventory category');
-    }
-    if (key === 'quantity' || key === 'lowStockThreshold') {
-      value = Math.max(0, Math.round(Number(value)));
-      if (Number.isNaN(value)) return bad(res, `${key} must be a number`);
+    if (key === 'quantity' || key === 'lowStockThreshold' || key === 'storageYears' || key === 'storageMonths' || key === 'storageDays') {
+      value = value !== null ? Math.max(0, Math.round(Number(value))) : null;
     }
     values.push(value);
     sets.push(`${column} = $${values.length}`);
@@ -310,7 +371,7 @@ app.patch('/api/inventory/:id', wrap(async (req, res) => {
 
   const found = await tx(async (db) => {
     const updated = await db.query(
-      `UPDATE inventory SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 RETURNING id`,
+      `UPDATE public.inventory SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 RETURNING id`,
       values,
     );
     if (updated.rowCount === 0) return false;
