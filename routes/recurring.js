@@ -40,6 +40,42 @@ export default function recurringRoutes(pool) {
     res.status(201).json(created.rows[0]);
   }));
 
+  // PUT /api/recurring/:id - Update an existing recurring template
+  router.put('/:id', wrap(async (req, res) => {
+    const { id } = req.params;
+    const { type, name, amount, categoryId, merchantId, paymentMethod, frequency, expectedDay } = req.body;
+    if (!name || !amount) return bad(res, 'Name and amount are required');
+
+    const updated = await pool.query(
+      `UPDATE recurring_templates 
+       SET type = $1, name = $2, amount = $3, category_id = $4, merchant_id = $5, 
+           payment_method = $6, frequency = $7, expected_day = $8
+       WHERE id = $9 RETURNING *`,
+      [
+        type || 'expense',
+        name.trim(),
+        amount,
+        categoryId || null,
+        merchantId || null,
+        paymentMethod || 'Cash',
+        frequency || 'monthly',
+        expectedDay || 1,
+        id,
+      ]
+    );
+
+    if (updated.rowCount === 0) return bad(res, 'Recurring template not found', 404);
+    res.json(updated.rows[0]);
+  }));
+
+  // DELETE /api/recurring/:id - Delete a recurring template
+  router.delete('/:id', wrap(async (req, res) => {
+    const { id } = req.params;
+    const deleted = await pool.query('DELETE FROM recurring_templates WHERE id = $1 RETURNING id', [id]);
+    if (deleted.rowCount === 0) return bad(res, 'Recurring template not found', 404);
+    res.json({ ok: true, deletedId: id });
+  }));
+
   // POST /api/recurring/sync - Auto-generates pending bills/income streams for a given month
   router.post('/sync', wrap(async (req, res) => {
     const { year, month } = req.body; // e.g. year: 2026, month: 10
