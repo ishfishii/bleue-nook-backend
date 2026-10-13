@@ -104,22 +104,26 @@ export default function recurringRoutes(pool) {
         const expectedDate = `${year}-${pad(month)}-${pad(expDay)}`;
         const amountVal = t.type === 'income' ? -Math.abs(t.amount) : t.amount;
 
-        const expRes = await pool.query(
-          `INSERT INTO expenses (id, merchant_id, category_id, total_amount, payment_method, date, status, is_recurring, created_at)
-           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'Pending', true, now())
-           RETURNING id`,
-          [t.merchant_id, t.category_id, amountVal, t.payment_method || 'Cash', expectedDate]
-        );
+        try {
+          const expRes = await pool.query(
+            `INSERT INTO expenses (id, merchant_id, category_id, total_amount, payment_method, date, status, is_recurring, created_at)
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'Pending', true, now())
+             RETURNING id`,
+            [t.merchant_id || null, t.category_id || null, amountVal, t.payment_method || 'Cash', expectedDate]
+          );
 
-        const newExpenseId = expRes.rows[0].id;
+          const newExpenseId = expRes.rows[0].id;
 
-        await pool.query(
-          `INSERT INTO expense_items (id, expense_id, item_name, quantity, unit_price)
-           VALUES (gen_random_uuid(), $1, $2, 1, $3)`,
-          [newExpenseId, t.name, amountVal]
-        );
+          await pool.query(
+            `INSERT INTO expense_items (id, expense_id, item_name, quantity, unit_price)
+             VALUES (gen_random_uuid(), $1, $2, 1, $3)`,
+            [newExpenseId, t.name, amountVal]
+          );
 
-        createdCount++;
+          createdCount++;
+        } catch (insertErr) {
+          console.error(`Failed to sync recurring template "${t.name}":`, insertErr.message);
+        }
       }
     }
 
