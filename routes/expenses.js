@@ -17,8 +17,8 @@ const EXPENSE_SELECT = `
          e.status AS "status",
          e.created_at AS "createdAt",
          COALESCE(json_agg(json_build_object(
-            'id', i.id, 'name', i.item_name, 'quantity', i.quantity,
-            'unitPrice', i.unit_price::float, 'productLink', i.product_link
+           'id', i.id, 'name', i.item_name, 'quantity', i.quantity,
+           'unitPrice', i.unit_price::float, 'productLink', i.product_link
          ) ORDER BY i.item_name) FILTER (WHERE i.id IS NOT NULL), '[]'::json) AS items
   FROM expenses e
   LEFT JOIN merchants m ON m.id = e.merchant_id
@@ -40,9 +40,24 @@ async function insertItems(db, expenseId, items) {
 export default function expenseRoutes(pool) {
   const router = Router();
 
+  // Middleware to extract and require user ID
+  const requireUser = (req, res, next) => {
+    const userId = req.headers['x-user-id'];
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized: Missing user ID' });
+    }
+    req.userId = userId;
+    next();
+  };
+
+  router.use(requireUser);
+
   // --- Expenses CRUD ---
   router.get('/', wrap(async (req, res) => {
-    const { rows } = await pool.query(`${EXPENSE_SELECT} ${EXPENSE_GROUP} ORDER BY e.created_at DESC`);
+    const { rows } = await pool.query(
+      `${EXPENSE_SELECT} WHERE e.user_id = $1 ${EXPENSE_GROUP} ORDER BY e.created_at DESC`,
+      [req.userId]
+    );
     res.json(rows);
   }));
 
@@ -58,14 +73,15 @@ export default function expenseRoutes(pool) {
     const st = status || 'Paid';
 
     const result = await tx(pool, async (db) => {
-      const cat = await db.query('SELECT auto_inventory FROM categories WHERE id = $1', [categoryId]);
+      // Ensure category belongs to user (or matches)
+      const cat = await db.query('SELECT auto_inventory FROM categories WHERE id = $1 AND user_id = $2', [categoryId, req.userId]);
       if (cat.rowCount === 0) return null;
 
       const created = await db.query(
-        `INSERT INTO expenses (id, merchant_id, total_amount, category_id, order_reference, date, payment_method, status, created_at)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, now())
+        `INSERT INTO expenses (id, user_id, merchant_id, total_amount, category_id, order_reference, date, payment_method, status, created_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, now())
          RETURNING id`,
-        [merchantId, totalOf(items), categoryId, orderReference || null, expenseDate, pm, st],
+        [req.userId, merchantId, totalOf(items), categoryId, orderReference || null, expenseDate, pm, st],
       );
       const expenseId = created.rows[0].id;
       await insertItems(db, expenseId, items);
@@ -73,15 +89,15 @@ export default function expenseRoutes(pool) {
       let addedToInventory = 0;
       if (cat.rows[0].auto_inventory) {
         for (const it of items) {
-          await addToInventory(db, it, merchantId);
+          await addToInventory(db, it, merchantId, req.userId);
           addedToInventory += 1;
         }
       }
       return { expenseId, addedToInventory };
     });
 
-    if (!result) return bad(res, 'Unknown category');
-    const { rows } = await pool.query(`${EXPENSE_SELECT} WHERE e.id = $1 ${EXPENSE_GROUP}`, [result.expenseId]);
+    if (!result) return bad(res, 'Unknown category or unauthorized');
+    const { rows } = await pool.query(`${EXPENSE_SELECT} WHERE e.id = $1 AND e.user_id = $2 ${EXPENSE_GROUP}`, [result.expenseId, req.userId]);
     res.status(201).json({ expense: rows[0], addedToInventory: result.addedToInventory });
   }));
 
@@ -99,9 +115,9 @@ export default function expenseRoutes(pool) {
     const found = await tx(pool, async (db) => {
       const updated = await db.query(
         `UPDATE expenses
-         SET merchant_id = $2, category_id = $3, order_reference = $4, total_amount = $5, date = $6, payment_method = $7, status = $8
-         WHERE id = $1 RETURNING id`,
-        [req.params.id, merchantId, categoryId, orderReference || null, totalOf(items), expenseDate, pm, st],
+         SET merchant_id = $3, category_id = $4, order_reference = $5, total_amount = $6, date = $7, payment_method = $8, status = $9
+         WHERE id = $1 AND user_id = $2 RETURNING id`,
+        [req.params.id, req.userId, merchantId, categoryId, orderReference || null, totalOf(items), expenseDate, pm, st],
       );
       if (updated.rowCount === 0) return false;
       await db.query('DELETE FROM expense_items WHERE expense_id = $1', [req.params.id]);
@@ -110,7 +126,7 @@ export default function expenseRoutes(pool) {
     });
 
     if (!found) return res.status(404).json({ error: 'Expense not found' });
-    const { rows } = await pool.query(`${EXPENSE_SELECT} WHERE e.id = $1 ${EXPENSE_GROUP}`, [req.params.id]);
+    const { rows } = await pool.query(`${EXPENSE_SELECT} WHERE e.id = $1 AND e.user_id = $2 ${EXPENSE_GROUP}`, [req.params.id, req.userId]);
     res.json(rows[0]);
   }));
 
@@ -123,7 +139,9 @@ export default function expenseRoutes(pool) {
        FROM recurring_templates rt
        LEFT JOIN categories c ON rt.category_id = c.id
        LEFT JOIN merchants m ON rt.merchant_id = m.id
-       ORDER BY rt.expected_day ASC`
+       WHERE rt.user_id = $1
+       ORDER BY rt.expected_day ASC`,
+      [req.userId]
     );
     res.json(rows);
   }));
@@ -133,9 +151,9 @@ export default function expenseRoutes(pool) {
     if (!name || !amount) return bad(res, 'Name and amount are required');
 
     const created = await pool.query(
-      `INSERT INTO recurring_templates (id, type, name, amount, category_id, merchant_id, payment_method, frequency, expected_day)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [type || 'expense', name.trim(), amount, categoryId || null, merchantId || null, paymentMethod || 'Cash', frequency || 'monthly', expectedDay || 1]
+      `INSERT INTO recurring_templates (id, user_id, type, name, amount, category_id, merchant_id, payment_method, frequency, expected_day)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [req.userId, type || 'expense', name.trim(), amount, categoryId || null, merchantId || null, paymentMethod || 'Cash', frequency || 'monthly', expectedDay || 1]
     );
     res.status(201).json(created.rows[0]);
   }));

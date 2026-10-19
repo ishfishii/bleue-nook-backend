@@ -2,30 +2,46 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import { pool } from './db/pool.js';
+import { requireAuth } from './middleware/requireAuth.js';
 import merchantRoutes from './routes/merchants.js';
 import categoryRoutes from './routes/categories.js';
 import expenseRoutes from './routes/expenses.js';
 import inventoryRoutes from './routes/inventory.js';
 import recurringRoutes from './routes/recurring.js';
 import inventoryCategoryRoutes from './routes/inventory-categories.js';
+import authRoutes from './routes/auth.js';
 
 const app = express();
-app.use(cors());
+
+app.use(
+  cors({
+    origin: '*',
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id'],
+  })
+);
+
 app.use(express.json());
 
 // Health check
-app.get('/api/health', async (req, res) => {
-  await pool.query('SELECT 1');
-  res.json({ ok: true });
+app.get('/api/health', async (req, res, next) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
 });
 
-// Mount modular routes
-app.use('/api/merchants', merchantRoutes(pool));
-app.use('/api/categories', categoryRoutes(pool));
-app.use('/api/expenses', expenseRoutes(pool));
-app.use('/api/inventory', inventoryRoutes(pool));
-app.use('/api/recurring', recurringRoutes(pool));
-app.use('/api/inventory-categories', inventoryCategoryRoutes(pool));
+// Public: login
+app.use('/api/auth', authRoutes);
+
+// Protected: everything below requires a valid session token
+app.use('/api/merchants', requireAuth, merchantRoutes(pool));
+app.use('/api/categories', requireAuth, categoryRoutes(pool));
+app.use('/api/expenses', requireAuth, expenseRoutes(pool));
+app.use('/api/inventory', requireAuth, inventoryRoutes(pool));
+app.use('/api/recurring', requireAuth, recurringRoutes(pool));
+app.use('/api/inventory-categories', requireAuth, inventoryCategoryRoutes(pool));
 
 // Global error handler
 app.use((err, req, res, next) => {

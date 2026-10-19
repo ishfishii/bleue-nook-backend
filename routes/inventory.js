@@ -43,8 +43,23 @@ const INVENTORY_FIELDS = {
 export default function inventoryRoutes(pool) {
   const router = Router();
 
+  // Middleware to extract and require user ID
+  const requireUser = (req, res, next) => {
+    const userId = req.headers['x-user-id'];
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized: Missing user ID' });
+    }
+    req.userId = userId;
+    next();
+  };
+
+  router.use(requireUser);
+
   router.get('/', wrap(async (req, res) => {
-    const { rows } = await pool.query(`${INVENTORY_SELECT} ORDER BY v.item_name`);
+    const { rows } = await pool.query(
+      `${INVENTORY_SELECT} WHERE v.user_id = $1 ORDER BY v.item_name`,
+      [req.userId]
+    );
     res.json(rows);
   }));
 
@@ -65,20 +80,20 @@ export default function inventoryRoutes(pool) {
 
     const created = await pool.query(
       `INSERT INTO public.inventory 
-         (id, item_name, category, current_qty, low_stock_threshold, status, date_opened, storage_years, storage_months, storage_days, expiration_date, is_essential, location, storage_location, updated_at)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, now())
+         (id, user_id, item_name, category, current_qty, low_stock_threshold, status, date_opened, storage_years, storage_months, storage_days, expiration_date, is_essential, location, storage_location, updated_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, now())
        RETURNING id`,
-      [name, category, quantity, DEFAULT_LOW_STOCK, status, dateOpened, storageYears, storageMonths, storageDays, expirationDate, isEssential, location]
+      [req.userId, name, category, quantity, DEFAULT_LOW_STOCK, status, dateOpened, storageYears, storageMonths, storageDays, expirationDate, isEssential, location]
     );
 
     const id = created.rows[0].id;
-    const { rows } = await pool.query(`${INVENTORY_SELECT} WHERE v.id = $1`, [id]);
+    const { rows } = await pool.query(`${INVENTORY_SELECT} WHERE v.id = $1 AND v.user_id = $2`, [id, req.userId]);
     res.status(201).json(rows[0]);
   }));
 
   router.patch('/:id', wrap(async (req, res) => {
     const sets = [];
-    const values = [req.params.id];
+    const values = [req.params.id, req.userId]; // $1 = id, $2 = user_id
 
     if ('dateOpened' in req.body || 'storageYears' in req.body || 'storageMonths' in req.body || 'storageDays' in req.body) {
       if (!('expirationDate' in req.body) || !req.body.expirationDate) {
@@ -114,7 +129,7 @@ export default function inventoryRoutes(pool) {
 
     const found = await tx(pool, async (db) => {
       const updated = await db.query(
-        `UPDATE public.inventory SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 RETURNING id`,
+        `UPDATE public.inventory SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING id`,
         values,
       );
       if (updated.rowCount === 0) return false;
@@ -127,13 +142,16 @@ export default function inventoryRoutes(pool) {
     });
 
     if (!found) return res.status(404).json({ error: 'Item not found' });
-    const { rows } = await pool.query(`${INVENTORY_SELECT} WHERE v.id = $1`, [req.params.id]);
+    const { rows } = await pool.query(`${INVENTORY_SELECT} WHERE v.id = $1 AND v.user_id = $2`, [req.params.id, req.userId]);
     res.json(rows[0]);
   }));
 
   // --- Inventory Categories ---
   router.get('/categories', wrap(async (req, res) => {
-    const { rows } = await pool.query('SELECT id, name, icon FROM inventory_categories ORDER BY name');
+    const { rows } = await pool.query(
+      'SELECT id, name, icon FROM inventory_categories WHERE user_id = $1 ORDER BY name',
+      [req.userId]
+    );
     res.json(rows);
   }));
 
@@ -143,8 +161,8 @@ export default function inventoryRoutes(pool) {
     if (!name) return bad(res, 'Category name is required');
 
     const created = await pool.query(
-      'INSERT INTO inventory_categories (id, name, icon) VALUES (gen_random_uuid(), $1, $2) RETURNING id, name, icon',
-      [name, icon]
+      'INSERT INTO inventory_categories (id, user_id, name, icon) VALUES (gen_random_uuid(), $1, $2, $3) RETURNING id, name, icon',
+      [req.userId, name, icon]
     );
     res.status(201).json(created.rows[0]);
   }));
