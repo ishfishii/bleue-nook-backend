@@ -261,6 +261,40 @@ export default function nutritionRoutes(pool) {
     }
   });
 
+  // PUT /api/nutrition/meal/:id - Update an existing meal item log
+  router.put('/meal/:id', async (req, res, next) => {
+    try {
+      const userUuid = await getUserUuid(req);
+      if (!userUuid) {
+        return res.status(401).json({ error: 'User record not found in database' });
+      }
+
+      const mealId = req.params.id;
+      const { foodName, servings, calories, proteinG, carbsG, fatG } = req.body;
+
+      const updateQuery = `
+        UPDATE meal_items 
+        SET food_name = $1, servings = $2, calories = $3, protein_g = $4, carbs_g = $5, fat_g = $6
+        FROM daily_logs 
+        WHERE meal_items.daily_log_id = daily_logs.id 
+          AND meal_items.id = $7 
+          AND daily_logs.user_id = $8
+        RETURNING meal_items.*;
+      `;
+
+      const values = [foodName, servings || 1, calories || 0, proteinG || 0, carbsG || 0, fatG || 0, mealId, userUuid];
+      const result = await pool.query(updateQuery, values);
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Meal item not found or unauthorized' });
+      }
+
+      res.json(result.rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // DELETE /api/nutrition/meal/:id - Delete a meal item log
   router.delete('/meal/:id', async (req, res, next) => {
     try {

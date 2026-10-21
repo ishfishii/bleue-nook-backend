@@ -18,7 +18,6 @@ const INVENTORY_SELECT = `
          v.storage_days AS "storageDays",
          v.expiration_date AS "expirationDate",
          v.is_essential AS "isEssential",
-         v.location,
          m.name AS "lastPurchasedFrom",
          v.updated_at AS "updatedAt"
   FROM inventory v
@@ -37,7 +36,6 @@ const INVENTORY_FIELDS = {
   storageDays: 'storage_days',
   expirationDate: 'expiration_date',
   isEssential: 'is_essential',
-  location: 'location',
 };
 
 export default function inventoryRoutes(pool) {
@@ -64,6 +62,8 @@ export default function inventoryRoutes(pool) {
   }));
 
   router.post('/', wrap(async (req, res) => {
+    console.log('Incoming inventory body:', req.body); // <-- Add this to see what arrives in your server console
+
     const name = String(req.body.name ?? '').trim();
     if (!name) return bad(res, 'Item name is required');
 
@@ -76,14 +76,17 @@ export default function inventoryRoutes(pool) {
     const storageDays = req.body.storageDays ? Number(req.body.storageDays) : null;
     const expirationDate = req.body.expirationDate || calculateExpiryDate(dateOpened, storageYears, storageMonths, storageDays);
     const isEssential = Boolean(req.body.isEssential);
-    const location = req.body.location || req.body.storageLocation ? String(req.body.location || req.body.storageLocation).trim() : null;
+    
+    // Fallback checking for storageLocation or location from frontend payload
+    const rawLoc = req.body.storageLocation !== undefined ? req.body.storageLocation : req.body.location;
+    const storageLocation = rawLoc ? String(rawLoc).trim() : null;
 
     const created = await pool.query(
       `INSERT INTO public.inventory 
-         (id, user_id, item_name, category, current_qty, low_stock_threshold, status, date_opened, storage_years, storage_months, storage_days, expiration_date, is_essential, location, storage_location, updated_at)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, now())
+         (id, user_id, item_name, category, current_qty, low_stock_threshold, status, date_opened, storage_years, storage_months, storage_days, expiration_date, is_essential, storage_location, updated_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
        RETURNING id`,
-      [req.userId, name, category, quantity, DEFAULT_LOW_STOCK, status, dateOpened, storageYears, storageMonths, storageDays, expirationDate, isEssential, location]
+      [req.userId, name, category, quantity, DEFAULT_LOW_STOCK, status, dateOpened, storageYears, storageMonths, storageDays, expirationDate, isEssential, storageLocation]
     );
 
     const id = created.rows[0].id;
@@ -104,11 +107,6 @@ export default function inventoryRoutes(pool) {
           req.body.storageDays || 0
         );
       }
-    }
-
-    // Sync storageLocation into location if provided
-    if ('storageLocation' in req.body && !('location' in req.body)) {
-      req.body.location = req.body.storageLocation;
     }
 
     for (const [key, column] of Object.entries(INVENTORY_FIELDS)) {
@@ -165,6 +163,16 @@ export default function inventoryRoutes(pool) {
       [req.userId, name, icon]
     );
     res.status(201).json(created.rows[0]);
+  }));
+
+  // DELETE Inventory Item
+  router.delete('/:id', wrap(async (req, res) => {
+    const { rowCount } = await pool.query(
+      `DELETE FROM public.inventory WHERE id = $1 AND user_id = $2`,
+      [req.params.id, req.userId]
+    );
+    if (rowCount === 0) return res.status(404).json({ error: 'Item not found' });
+    res.json({ success: true, id: req.params.id });
   }));
 
   return router;

@@ -130,6 +130,25 @@ export default function expenseRoutes(pool) {
     res.json(rows[0]);
   }));
 
+  router.delete('/:id', wrap(async (req, res) => {
+    const deleted = await tx(pool, async (db) => {
+      // Delete associated expense items first (if cascade isn't set on foreign key)
+      await db.query('DELETE FROM expense_items WHERE expense_id = $1', [req.params.id]);
+      
+      const result = await db.query(
+        `DELETE FROM expenses WHERE id = $1 AND user_id = $2 RETURNING id`,
+        [req.params.id, req.userId]
+      );
+      return result.rowCount > 0;
+    });
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Expense not found or unauthorized' });
+    }
+    
+    res.json({ success: true, id: req.params.id });
+  }));
+
   // --- Recurring Templates ---
   router.get('/recurring', wrap(async (req, res) => {
     const { rows } = await pool.query(
