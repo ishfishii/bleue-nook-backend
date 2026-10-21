@@ -9,7 +9,10 @@ import expenseRoutes from './routes/expenses.js';
 import inventoryRoutes from './routes/inventory.js';
 import recurringRoutes from './routes/recurring.js';
 import inventoryCategoryRoutes from './routes/inventory-categories.js';
+import nutritionRoutes from './routes/nutrition.js'; //
 import authRoutes from './routes/auth.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const app = express();
 
@@ -42,6 +45,13 @@ app.use('/api/expenses', requireAuth, expenseRoutes(pool));
 app.use('/api/inventory', requireAuth, inventoryRoutes(pool));
 app.use('/api/recurring', requireAuth, recurringRoutes(pool));
 app.use('/api/inventory-categories', requireAuth, inventoryCategoryRoutes(pool));
+app.use('/api/nutrition', requireAuth, nutritionRoutes(pool));
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const webDist = process.env.WEB_DIST || path.resolve(here, '../bleue-nook/dist'); // adjust to your app folder
+
+app.use(express.static(webDist));
+app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(webDist, 'index.html')));
 
 // Global error handler
 app.use((err, req, res, next) => {

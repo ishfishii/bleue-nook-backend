@@ -54,3 +54,6 @@ export default function categoryRoutes(pool) {
     if (updated.rowCount === 0) return res.status(404).json({ error: 'Category not found' });
     res.json(updated.rows[0]);
   }));
+
+  return router;
+}
